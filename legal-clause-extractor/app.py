@@ -56,7 +56,18 @@ with st.sidebar:
     st.divider()
     st.caption("Built with Streamlit + Gemini 1.5 Flash · Free to deploy on Streamlit Cloud")
 
+# -- Main area --
+uploaded_file = st.file_uploader("Drop your contract PDF here", type=["pdf"])
 
+# ADD THIS: Reset session state if a new file is uploaded
+if "last_uploaded_file" not in st.session_state:
+    st.session_state["last_uploaded_file"] = None
+
+if uploaded_file != st.session_state["last_uploaded_file"]:
+    st.session_state["clauses"] = None
+    st.session_state["exec_summary"] = None
+    st.session_state["last_uploaded_file"] = uploaded_file
+    
 # ── Main area ─────────────────────────────────────────────────────────────────
 st.header("Contract Analysis")
 
