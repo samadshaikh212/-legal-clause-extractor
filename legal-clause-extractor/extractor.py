@@ -27,52 +27,32 @@ Respond ONLY with a valid JSON object. No explanation, no markdown, no backticks
 def configure_gemini(api_key: str):
     genai.configure(api_key=api_key)
 
-
 def analyze_chunk(chunk: str, model) -> dict | None:
-    """Send one paragraph to Gemini and parse the JSON response."""
-    prompt = f"{SYSTEM_PROMPT}\n\nParagraph to analyze:\n\"\"\"\n{chunk}\n\"\"\""
-
+    prompt = f"{SYSTEM_PROMPT}\n\nParagraph to analyze:\n{chunk}"
     try:
         response = model.generate_content(prompt)
-        raw = response.text.strip()
-
-        # Strip markdown code fences if model adds them
-        raw = re.sub(r'^```json\s*', '', raw)
-        raw = re.sub(r'^```\s*', '', raw)
-        raw = re.sub(r'\s*```$', '', raw)
-
-        result = json.loads(raw)
-
-        # Only return if it's actually a legal clause
-        if not result.get("is_legal_clause", False):
-            return None
-
-        result["original_text"] = chunk
-        return result
-
-    except (json.JSONDecodeError, Exception):
+        text = response.text
+        
+        # Remove markdown backticks if present
+        if "```json" in text:
+            text = text.split("```json")[1].split("```")[0]
+        elif "```" in text:
+            text = text.split("```")[1].split("```")[0]
+            
+        return json.loads(text.strip())
+    except Exception as e:
+        print(f"Error parsing: {e}")
         return None
 
 
 def extract_clauses(chunks: list[str], api_key: str, progress_callback=None) -> list[dict]:
-    """
-    Run analysis on all chunks.
-    progress_callback(i, total) called after each chunk if provided.
-    """
     configure_gemini(api_key)
-    model = genai.GenerativeModel("gemini-1.5-flash")
-
-    results = []
-    total = len(chunks)
-
-    for i, chunk in enumerate(chunks):
-        result = analyze_chunk(chunk, model)
-        if result:
-            results.append(result)
-        if progress_callback:
-            progress_callback(i + 1, total)
-
-    return results
+    # Adding generation_config ensures the model targets JSON output
+    model = genai.GenerativeModel(
+        "gemini-1.5-flash",
+        generation_config={"response_mime_type": "application/json"}
+    )
+    # ... rest of your code
 
 
 def summarize_contract(clauses: list[dict], api_key: str) -> str:
