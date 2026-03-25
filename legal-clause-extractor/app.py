@@ -1,66 +1,51 @@
 import streamlit as st
-import pandas as pd
 from utils import extract_text_from_pdf, clean_text, chunk_text
 from extractor import extract_clauses, summarize_contract
 
-st.set_page_config(page_title="Legal Clause Extractor", layout="wide")
-
-# CSS (kept the same for brevity)
-st.markdown("<style>.risk-high {background:#fee2e2; color:#991b1b; padding:2px 10px; border-radius:99px;}</style>", unsafe_allow_html=True)
+st.set_page_config(page_title="Legal Extractor Debug", layout="wide")
 
 with st.sidebar:
-    st.title("⚖️ Legal Extractor")
+    st.title("⚖️ Settings")
     api_key = st.text_input("Gemini API Key", type="password")
 
-uploaded_file = st.file_uploader("Upload Contract", type=["pdf"])
+st.header("Contract Analysis")
+uploaded_file = st.file_uploader("Upload PDF", type=["pdf"])
 
-if not api_key:
-    st.info("Enter API Key to start.")
-    st.stop()
-
-if uploaded_file:
-    if st.button("Extract Clauses", type="primary"):
-        with st.spinner("Processing..."):
-            # Step 1: Extract and Chunk
-            raw_text = extract_text_from_pdf(uploaded_file)
-            chunks = chunk_text(clean_text(raw_text))
-            
-            # DEBUG: Check if text was actually read
-            if not chunks:
-                st.error("The PDF reader couldn't find any text. Is this a scanned image PDF?")
-                st.stop()
-            
-            st.write(f"🔍 Found {len(chunks)} sections. Sending to AI...")
-            
-            # Step 2: AI Analysis
-            progress_bar = st.progress(0)
-            def update_p(done, total):
-                progress_bar.progress(done/total)
-            
-            results = extract_clauses(chunks, api_key, update_p)
-            st.session_state.clauses = results
-            progress_bar.empty()
-
-    if st.session_state.get("clauses"):
-        clauses = st.session_state.clauses
+if uploaded_file and api_key:
+    if st.button("Start Analysis"):
+        # 1. Read PDF
+        raw_text = extract_text_from_pdf(uploaded_file)
+        chunks = chunk_text(clean_text(raw_text))
         
-        # Filter for only true legal clauses for the final display
-        filtered = [c for c in clauses if c.get("is_legal_clause") is True]
-        
-        # If the AI marked EVERYTHING as false, let's just show everything anyway 
-        # so the user doesn't see an empty screen.
-        if not filtered:
-            filtered = clauses
+        if not chunks:
+            st.error("No text found in PDF. Is it a scan?")
+            st.stop()
+            
+        st.info(f"Step 1 Complete: Found {len(chunks)} paragraphs. Starting AI...")
 
-        st.success(f"Analyzed {len(clauses)} items. Showing {len(filtered)} clauses.")
-        
-        # Executive Summary
-        with st.expander("Summary"):
-            st.write(summarize_contract(filtered, api_key))
+        # 2. AI Processing
+        prog = st.progress(0)
+        def update_p(d, t):
+            prog.progress(d/t, text=f"Processing {d}/{t}...")
 
-        # Display results
-        for c in filtered:
-            st.subheader(f"{c['clause_type']} ({c['risk_level']} Risk)")
-            st.write(c['summary'])
-            with st.expander("Source Text"):
-                st.caption(c.get("original_text", "No text found"))
+        results = extract_clauses(chunks, api_key, update_p)
+        st.session_state.clauses = results
+        prog.empty()
+        
+        # 3. Final Check
+        if not results:
+            st.error("AI returned zero results. Check your API Key or Terminal Logs.")
+        else:
+            st.success(f"Success! Found {len(results)} items.")
+            st.rerun() # Refresh to show cards
+
+if st.session_state.get("clauses"):
+    # Display the results
+    for i, c in enumerate(st.session_state.clauses):
+        with st.container():
+            st.markdown(f"### {i+1}. {c.get('clause_type', 'Unknown')}")
+            st.write(f"**Summary:** {c.get('summary')}")
+            st.info(f"**Risk:** {c.get('risk_level')} - {c.get('risk_reason')}")
+            with st.expander("Original Text"):
+                st.write(c.get("original_text"))
+            st.divider()
