@@ -89,7 +89,7 @@ def extract_clauses(chunks: list, api_key: str, progress_callback=None) -> list:
         client = Groq(api_key=api_key)
         # Quick connection test
         client.chat.completions.create(
-            model="llama3-70b-8192",
+           model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": "Reply with the single word: OK"}],
             max_tokens=5,
         )
@@ -128,7 +128,7 @@ def summarize_contract(clauses: list, api_key: str) -> str:
                  for c in clauses]
 
         response = client.chat.completions.create(
-            model="llama3-70b-8192",
+            model="llama-3.3-70b-versatile",
             messages=[{
                 "role": "user",
                 "content": (
