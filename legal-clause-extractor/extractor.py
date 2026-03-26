@@ -1,155 +1,107 @@
 import json
 import re
 import time
+import streamlit as st
 from groq import Groq
 
 
-# ── Prompt ────────────────────────────────────────────────────────────────────
+SYSTEM_PROMPT = """You are a senior legal document analyst.
 
-SYSTEM_PROMPT = """You are a senior legal document analyst with 20 years of experience.
+Read the contract paragraph below and return ONLY a JSON object with these exact fields:
 
-Your job is to read a single paragraph from a contract and return a structured JSON analysis.
-
-RULES:
-- Respond ONLY with a raw JSON object. No markdown, no backticks, no explanation.
-- If the paragraph is NOT a legal clause (e.g. it is a page number, title, table of contents, signature line, or blank filler text), set "is_legal_clause" to false and still return valid JSON.
-- Be conservative with risk: only mark "High" if there is a genuine legal risk (unlimited liability, no termination right, waiver of rights, etc.)
-
-REQUIRED JSON FIELDS:
-{
-  "is_legal_clause": true or false,
-  "clause_type": one of ["Obligation", "Right", "Deadline", "Payment", "Termination", "Confidentiality", "Liability", "Indemnity", "Governing Law", "Dispute Resolution", "Warranty", "Intellectual Property", "Other"],
-  "summary": "One plain-English sentence, max 25 words.",
-  "risk_level": one of ["High", "Medium", "Low", "None"],
-  "risk_reason": "One short phrase explaining the risk. Empty string if None.",
-  "key_parties": ["Party1", "Party2"],
-  "obligations": ["short obligation 1", "short obligation 2"],
-  "rights": ["short right 1"]
-}
-
-EXAMPLE OUTPUT:
 {
   "is_legal_clause": true,
-  "clause_type": "Liability",
-  "summary": "Neither party is liable for indirect or consequential damages under any circumstances.",
+  "clause_type": "Obligation",
+  "summary": "One plain English sentence under 25 words.",
   "risk_level": "High",
-  "risk_reason": "Broad exclusion may prevent damage recovery in serious breaches.",
+  "risk_reason": "Short reason under 15 words.",
   "key_parties": ["Client", "Vendor"],
-  "obligations": [],
-  "rights": ["Neither party may claim consequential damages"]
-}"""
+  "obligations": ["obligation 1"],
+  "rights": ["right 1"]
+}
+
+Rules:
+- clause_type must be one of: Obligation, Right, Deadline, Payment, Termination, Confidentiality, Liability, Indemnity, Governing Law, Dispute Resolution, Warranty, Intellectual Property, Other
+- risk_level must be one of: High, Medium, Low, None
+- Set is_legal_clause to false only for page numbers, headers, signature lines, or table of contents
+- Return ONLY the JSON object. No explanation. No markdown. No backticks."""
 
 
-# ── Core helpers ──────────────────────────────────────────────────────────────
-
-def _clean_json_response(raw: str) -> str:
-    """Strip markdown fences and whitespace from model output."""
-    raw = raw.strip()
-    raw = re.sub(r'^```json\s*', '', raw, flags=re.IGNORECASE)
-    raw = re.sub(r'^```\s*', '', raw)
-    raw = re.sub(r'\s*```$', '', raw)
-    # Extract first JSON object if model adds trailing text
-    match = re.search(r'\{.*\}', raw, re.DOTALL)
-    return match.group(0) if match else raw
-
-
-def _make_client(api_key: str) -> Groq:
-    return Groq(api_key=api_key)
-
-
-# ── Single chunk analysis ─────────────────────────────────────────────────────
-
-def analyze_chunk(chunk: str, client: Groq, retries: int = 2) -> dict | None:
-    """
-    Send one paragraph to Groq Llama3-70B and return structured result.
-    Retries up to `retries` times on failure.
-    Returns None if the paragraph is not a legal clause or if all retries fail.
-    """
-    for attempt in range(retries + 1):
+def analyze_chunk(chunk: str, client: Groq) -> dict | None:
+    for attempt in range(3):
         try:
             response = client.chat.completions.create(
                 model="llama3-70b-8192",
                 messages=[
-                    {
-                        "role": "system",
-                        "content": SYSTEM_PROMPT
-                    },
-                    {
-                        "role": "user",
-                        "content": f"Analyze this contract paragraph:\n\"\"\"\n{chunk.strip()}\n\"\"\""
-                    }
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": f"Analyze this paragraph:\n\n{chunk.strip()}"}
                 ],
-                temperature=0.05,   # very low = more consistent JSON output
-                max_tokens=400,
-                stop=None,
+                temperature=0.0,
+                max_tokens=350,
             )
 
-            raw = response.choices[0].message.content
-            cleaned = _clean_json_response(raw)
-            result = json.loads(cleaned)
+            raw = response.choices[0].message.content.strip()
 
-            # Skip non-legal paragraphs silently
-            if not result.get("is_legal_clause", False):
+            # Strip any markdown fences
+            raw = re.sub(r'^```json\s*', '', raw, flags=re.IGNORECASE)
+            raw = re.sub(r'^```\s*', '', raw)
+            raw = re.sub(r'\s*```$', '', raw)
+
+            # Extract first JSON object
+            match = re.search(r'\{.*\}', raw, re.DOTALL)
+            if not match:
+                continue
+            raw = match.group(0)
+
+            result = json.loads(raw)
+
+            if not result.get("is_legal_clause", True):
                 return None
 
-            # Attach original text for display in UI
             result["original_text"] = chunk.strip()
-
-            # Ensure all expected fields exist with safe defaults
             result.setdefault("clause_type", "Other")
-            result.setdefault("summary", "")
+            result.setdefault("summary", chunk[:100])
             result.setdefault("risk_level", "None")
             result.setdefault("risk_reason", "")
             result.setdefault("key_parties", [])
             result.setdefault("obligations", [])
             result.setdefault("rights", [])
-
             return result
 
         except json.JSONDecodeError:
-            # Model returned non-JSON — retry
-            if attempt < retries:
-                time.sleep(0.5)
+            time.sleep(0.5)
             continue
 
         except Exception as e:
-            error_msg = str(e).lower()
-            # Rate limit: wait and retry
-            if "rate" in error_msg or "429" in error_msg:
-                wait = 5 * (attempt + 1)
-                time.sleep(wait)
+            msg = str(e).lower()
+            if "rate" in msg or "429" in msg:
+                time.sleep(5 * (attempt + 1))
                 continue
-            # Any other error: skip this chunk
+            # Show real error in Streamlit so we can debug
+            st.error(f"Groq API error on chunk: {str(e)}")
             return None
 
     return None
 
 
-# ── Batch extraction ──────────────────────────────────────────────────────────
+def extract_clauses(chunks: list, api_key: str, progress_callback=None) -> list:
+    try:
+        client = Groq(api_key=api_key)
+        # Quick connection test
+        client.chat.completions.create(
+            model="llama3-70b-8192",
+            messages=[{"role": "user", "content": "Reply with the single word: OK"}],
+            max_tokens=5,
+        )
+    except Exception as e:
+        st.error(f"Cannot connect to Groq API: {str(e)}")
+        return []
 
-def extract_clauses(
-    chunks: list[str],
-    api_key: str,
-    progress_callback=None
-) -> list[dict]:
-    """
-    Analyze all chunks from a contract.
-
-    Args:
-        chunks:            List of paragraph strings from utils.chunk_text()
-        api_key:           Groq API key
-        progress_callback: Optional fn(done: int, total: int) for progress bar
-
-    Returns:
-        List of clause dicts, one per detected legal clause.
-    """
-    client = _make_client(api_key)
     results = []
     total = len(chunks)
 
     for i, chunk in enumerate(chunks):
-        # Skip very short chunks — not enough text to be a clause
-        if len(chunk.strip()) < 60:
+        if len(chunk.strip()) < 40:
             if progress_callback:
                 progress_callback(i + 1, total)
             continue
@@ -161,57 +113,35 @@ def extract_clauses(
         if progress_callback:
             progress_callback(i + 1, total)
 
-        # Small delay between calls to stay within free tier rate limits
-        time.sleep(0.2)
+        time.sleep(0.15)
 
     return results
 
 
-# ── Executive summary ─────────────────────────────────────────────────────────
-
-def summarize_contract(clauses: list[dict], api_key: str) -> str:
-    """
-    Generate a plain-English executive summary from all extracted clauses.
-    Uses a single Groq call over the clause list (not the raw PDF text).
-    """
+def summarize_contract(clauses: list, api_key: str) -> str:
     if not clauses:
-        return "No legal clauses were detected in this document."
-
-    client = _make_client(api_key)
-
-    # Build a compact clause list for the prompt
-    lines = []
-    for c in clauses:
-        risk = c.get("risk_level", "None")
-        ctype = c.get("clause_type", "Other")
-        summary = c.get("summary", "")
-        lines.append(f"- [{ctype}] [{risk} risk] {summary}")
-
-    clause_block = "\n".join(lines)
-
-    prompt = f"""You are a legal analyst summarizing a contract for a busy executive who is not a lawyer.
-
-Below are the key clauses extracted from the contract:
-
-{clause_block}
-
-Write a clear executive summary of 5-7 sentences covering:
-1. What this contract is about
-2. The most important obligations on each party
-3. Key deadlines or payment terms if present
-4. The biggest legal risks
-5. Any unusual or one-sided clauses worth flagging
-
-Write in plain English. No bullet points. No legal jargon."""
+        return "No clauses were extracted."
 
     try:
+        client = Groq(api_key=api_key)
+        lines = [f"- [{c.get('clause_type','Other')}] [{c.get('risk_level','None')} risk] {c.get('summary','')}"
+                 for c in clauses]
+
         response = client.chat.completions.create(
             model="llama3-70b-8192",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.4,
-            max_tokens=500,
+            messages=[{
+                "role": "user",
+                "content": (
+                    "You are a legal analyst. Write a plain-English executive summary "
+                    "(5-6 sentences) of this contract for a non-lawyer. Cover: what it's about, "
+                    "key obligations, deadlines, payment terms, and biggest risks.\n\n"
+                    "Clauses:\n" + "\n".join(lines)
+                )
+            }],
+            temperature=0.3,
+            max_tokens=400,
         )
         return response.choices[0].message.content.strip()
 
-    except Exception:
-        return "Executive summary could not be generated. Please review the clauses individually."
+    except Exception as e:
+        return f"Summary generation failed: {str(e)}"
