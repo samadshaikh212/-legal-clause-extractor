@@ -26,12 +26,14 @@ Rules:
 - Set is_legal_clause to false only for page numbers, headers, signature lines, or table of contents
 - Return ONLY the JSON object. No explanation. No markdown. No backticks."""
 
+MODEL = "llama-3.3-70b-versatile"
+
 
 def analyze_chunk(chunk: str, client: Groq) -> dict | None:
     for attempt in range(3):
         try:
             response = client.chat.completions.create(
-                model="llama3-70b-8192",
+                model=MODEL,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": f"Analyze this paragraph:\n\n{chunk.strip()}"}
@@ -41,13 +43,10 @@ def analyze_chunk(chunk: str, client: Groq) -> dict | None:
             )
 
             raw = response.choices[0].message.content.strip()
-
-            # Strip any markdown fences
             raw = re.sub(r'^```json\s*', '', raw, flags=re.IGNORECASE)
             raw = re.sub(r'^```\s*', '', raw)
             raw = re.sub(r'\s*```$', '', raw)
 
-            # Extract first JSON object
             match = re.search(r'\{.*\}', raw, re.DOTALL)
             if not match:
                 continue
@@ -77,7 +76,6 @@ def analyze_chunk(chunk: str, client: Groq) -> dict | None:
             if "rate" in msg or "429" in msg:
                 time.sleep(5 * (attempt + 1))
                 continue
-            # Show real error in Streamlit so we can debug
             st.error(f"Groq API error on chunk: {str(e)}")
             return None
 
@@ -87,9 +85,8 @@ def analyze_chunk(chunk: str, client: Groq) -> dict | None:
 def extract_clauses(chunks: list, api_key: str, progress_callback=None) -> list:
     try:
         client = Groq(api_key=api_key)
-        # Quick connection test
         client.chat.completions.create(
-           model="llama-3.3-70b-versatile",
+            model=MODEL,
             messages=[{"role": "user", "content": "Reply with the single word: OK"}],
             max_tokens=5,
         )
@@ -124,11 +121,13 @@ def summarize_contract(clauses: list, api_key: str) -> str:
 
     try:
         client = Groq(api_key=api_key)
-        lines = [f"- [{c.get('clause_type','Other')}] [{c.get('risk_level','None')} risk] {c.get('summary','')}"
-                 for c in clauses]
+        lines = [
+            f"- [{c.get('clause_type','Other')}] [{c.get('risk_level','None')} risk] {c.get('summary','')}"
+            for c in clauses
+        ]
 
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=MODEL,
             messages=[{
                 "role": "user",
                 "content": (
